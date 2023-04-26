@@ -9,3 +9,5 @@
 /static/vendor/sweetalert2/
 /static/vendor/waypoints/
 /static/vendor/@popperjs/
+/static/css/data_tables.css
+/static/css/bootstrap-clockpicker.min.css
