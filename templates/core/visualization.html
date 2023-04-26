@@ -1,0 +1,46 @@
+{% extends 'layout/base.html' %}
+
+{% load i18n static humanize %}
+
+{% block extra_style %}{% endblock extra_style %}
+
+{% block message_content %}{% endblock message_content %}
+
+{% block content %}
+    <div class="container-fluid py-4">
+        <div class="row">
+            <div class="col-lg-6 mb-4">
+                <div class="card card-body border-0 shadow">
+                    <h3 class="fw-bolder text-center pt-2 pb-1">Scatter Plot</h3>
+                        <img src="{% static 'assets/img/scatter_plot.png' %}" alt="Scatter Plot">
+
+                </div>
+            </div>
+            <div class="col-lg-6 mb-4">
+                <div class="card card-body border-0 shadow">
+                    <h3 class="fw-bolder text-center pt-2 pb-1">ROC Curve</h3>
+                    <img src="{% static 'assets/img/roc_curve.png' %}" alt="ROC Curve">
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-lg-6 mb-4">
+                <div class="card card-body border-0 shadow">
+                    <h3 class="fw-bolder text-center pt-2 pb-1">Representation of different channels</h3>
+                        <img src="{% static 'assets/img/independent_channel.png' %}" alt="Representation of different channels">
+
+                </div>
+            </div>
+            <div class="col-lg-6 mb-4">
+                <div class="card card-body border-0 shadow">
+                    <h3 class="fw-bolder text-center pt-2 pb-1">Representation of different stacked channels</h3>
+                    <img src="{% static 'assets/img/stacked_channels.png' %}" alt="Representation of different channels">
+                </div>
+                <div class="card card-body border-0 my-1 shadow">
+                    <h3 class="fw-bolder text-center pt-2 pb-1">Heat Map</h3>
+                    <img src="{% static 'assets/img/heat_map.png' %}" alt="Heat Map">
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock content %}

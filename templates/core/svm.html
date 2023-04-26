@@ -1,0 +1,27 @@
+{% extends 'layout/base.html' %}
+
+{% load i18n static humanize %}
+
+{% block extra_style %}{% endblock extra_style %}
+
+{% block message_content %}{% endblock message_content %}
+
+{% block content %}
+    <div class="container-fluid py-4">
+        <h1 class="fw-bolder text-center pt-2 pb-1">Support Vector Machine</h1>
+        <div class="mb-4">
+            <div class="card card-body border-0 shadow">
+                <h5 class="fw-bold text-center">Classification Report</h5>
+                <pre class="text-center font">{{ classificationReport|safe }}</pre>
+            </div>
+        </div>
+        <div class="row">
+            <div class="card card-body border-0 shadow col-lg-3 mb-4">
+                    <img src="data:image/png;base64,{{ confusion_matrix_string }}" alt="Confusion Matrix" height="400" width="400">
+            </div>
+            <div class=" card card-body border-0 shadow col-lg-3 mb-4">
+                    <img src="data:image/png;base64,{{ roc_curve_string }}" alt="ROC Curve" height="400" width="400">
+            </div>
+        </div>
+    </div>
+{% endblock content %}

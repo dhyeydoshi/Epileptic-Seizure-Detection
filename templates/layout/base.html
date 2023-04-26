@@ -1,0 +1,27 @@
+{% extends 'layout/main.html' %}
+
+{% load static %}
+
+{% block main_content %}
+    <nav class="navbar navbar-dark navbar-theme-primary px-4 col-12 d-lg-none">
+        <div class="d-flex align-items-center">
+            <button class="navbar-toggler d-lg-none collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#sidebarMenu" aria-controls="sidebarMenu" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+        </div>
+    </nav>
+
+    {% include 'includes/sidebar.html' %}
+
+    <main class="content">
+
+        {% block content %}{% endblock content %}
+
+{#        {% include 'includes/settings-box.html' %}#}
+
+{#        {% include 'includes/footer.html' %}#}
+
+    </main>
+
+{#    {% include 'includes/scripts.html' %}#}
+{% endblock main_content %}
