@@ -15,6 +15,7 @@
         </div>
         <div class="row my-2">
             <div class="card card-body border-0 shadow">
+            <strong>Note: Upload the Data and Labels</strong>
                 <div class="row">
                     <div class="col-lg-3 mb-4">
                         <h3 class="fw-bolder  pt-2 pb-1">File Upload</h3>
@@ -22,8 +23,21 @@
                     <div class="col-lg-6 mb-4">
                     <form action="{% url 'core:dashboard' %}" class="row" method="post" enctype="multipart/form-data">
                         {% csrf_token %}
-                        <div class="col-auto">
-                            <input class="form-control" type="file" name="file" required>
+                        <div class="row">
+                            <div class="col-lg-2 align-self-center">
+                            <label for="data_input">Data</label>
+                            </div>
+                        <div class="col-auto mb-2">
+                            <input id="data_input" class="form-control" type="file" name="data_file" required>
+                        </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-lg-2 align-self-center">
+                            <label for="labels_input">Labels</label>
+                            </div>
+                        <div class="col-auto mb-2">
+                            <input id="labels_input" class="form-control" type="file" name="labels_file" required>
+                        </div>
                         </div>
                         <div class="col-auto">
                             <button class="form-control btn-primary" type="submit">Upload</button>

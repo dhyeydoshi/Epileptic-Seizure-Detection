@@ -20,6 +20,27 @@ from django.views.generic import TemplateView
 
 # Create your views here.
 module_dir = os.path.dirname(__file__)
+class BaseDatasetClass:
+
+    def __init__(self, data_path=None, label_path=None):
+        if data_path and label_path:
+            self.data_path = data_path
+            self.label_path = label_path
+            self.update_data()
+
+    def update_data(self):
+        self.og_data = pd.read_csv(self.data_path)
+        self.og_labels = pd.read_csv(self.label_path)
+        self.split_data()
+
+    def split_data(self):
+        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(self.og_data, self.og_labels, test_size=0.2, random_state=42)
+        self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(self.X_train, self.y_train, test_size=0.25, random_state=42)
+        scaler = StandardScaler()
+        self.X_train = scaler.fit_transform(self.X_train)
+        self.X_val = scaler.transform(self.X_val)
+        self.X_test = scaler.transform(self.X_test)
+
 og_data = pd.read_csv(os.path.join(module_dir, '../','data/data.csv'))
 og_labels = pd.read_csv(os.path.join(module_dir, '../','data/labels.csv'))
 
@@ -37,9 +58,7 @@ class DashboardView(View):
         uploaded_file = request.FILES.get('file')
         request.session['file_name'] = uploaded_file.name
         if uploaded_file:
-            file_df = pd.read_csv(uploaded_file)
             report = {
-                'file_content': file_df,
                 'success': True
             }
             return render(request, self.template_name, report)
@@ -117,42 +136,6 @@ class CNNView(TemplateView):
         buffer.close()
         plt.close()
         return base64.b64encode(image_png).decode('utf-8')
-
-    # def post(self, request, *args, **kwargs):
-    #     patient_number = request.POST.get('patient_number')
-    #
-    #     algo_path = os.path.join(module_dir, '../', 'model', 'DeepLearning.h5')
-    #     model = load_model(algo_path)
-    #
-    #     data_path = os.path.join(module_dir, '../', 'Epileptic Seizure Recognition.csv')
-    #     dataset = pd.read_csv(data_path)
-    #
-    #     dataset = dataset[dataset['Unnamed'].str.split('.').str[2] == patient_number]
-    #     data_x = dataset.drop(['Unnamed', 'y'], axis=1).copy()
-    #     data_x = scaler.transform(data_x)
-    #     data_y = dataset['y'].replace([2,3,4,5],0).copy()
-    #
-    #     predictions = model.predict(data_x)
-    #     binary_predictions = [1 if prediction > 0.5 else 0 for prediction in predictions]
-    #     print(binary_predictions)
-    #     # Threshold for classification
-    #     threshold = 0.5
-    #
-    #     # Apply threshold and classify patient's output
-    #     predicted_class = 1 if np.mean(binary_predictions) >= threshold else 0
-    #
-    #     print(predicted_class)
-    #     # Print prediction
-    #     if predicted_class == 1:
-    #         output_string = "The patient is predicted to have epilepsy."
-    #     else:
-    #         output_string = "The patient is predicted to not have epilepsy."
-    #
-    #     data = {
-    #         'output_string': output_string,
-    #         'success': True
-    #     }
-    #     return render(request, self.template_name, data)
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
