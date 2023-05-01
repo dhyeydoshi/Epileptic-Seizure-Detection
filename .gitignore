@@ -12,3 +12,5 @@
 /static/css/data_tables.css
 /static/css/bootstrap-clockpicker.min.css
 /db.sqlite3
+/epileptic_seizure_detection/settings.py
+*.pyc
