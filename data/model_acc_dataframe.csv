@@ -1,8 +1,11 @@
-Model,Score,Precision,F1_Score,Recall,View
-CNN,98.54,98.94,98.55,98.94,CNNView
-XgBoost,98.29,97.51,98.31,99.12,XgBoostView
-Random Forest,96.55,97.48,96.53,95.60,RandomForestView
-KNN,96.47,99.65,96.37,93.30,KNNView
-SVM,93.96,99.44,93.63,88.46,SVMView
-Naive Bayes,91.32,96.71,90.82,85.60,NaiveBayesView
-Logistic Regression,63.39,67.55,58.78,52.03,LogisticView
+Model,Score,Precision,F1_Score,Recall,View,SavedModelName
+CNN,98.57,98.47,98.46,98.68,CNNView,DeepLearning.h5
+XgBoost,98.45,98.52,98.46,98.41,XgBoostView,XgBoostModel.pickle
+CNN,98.45,98.47,98.46,98.68,CNNView,DeepLearning.h5
+Random Forest,96.61,98.02,96.57,95.17,RandomForestView,RandomForestModel.pickle
+KNN,96.11,99.70,95.98,92.53,KNNView,KNNModel.pickle
+SVM,92.80,99.68,92.30,85.94,SVMView,SVMModel.pickle
+Naive Bayes,91.17,97.53,90.59,84.57,NaiveBayesView,SVMModel.pickle
+Logistic Regression,64.40,70.28,58.79,50.52,LogisticView,LogisticRegressionModel.pickle
+CNN,0.99,98.47,98.46,98.68,CNNView,DeepLearning.h5
+CNN,0.99,98.47,98.46,98.68,CNNView,DeepLearning.h5

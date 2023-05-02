@@ -1,7 +1,7 @@
 import base64
 import io
 
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 import os
 import pandas as pd
 import numpy as np
@@ -20,6 +20,7 @@ from django.views.generic import TemplateView
 
 # Create your views here.
 module_dir = os.path.dirname(__file__)
+scaler = StandardScaler()
 class BaseDatasetClass:
 
     def __init__(self, data_path=None, label_path=None):
@@ -41,23 +42,64 @@ class BaseDatasetClass:
         self.X_val = scaler.transform(self.X_val)
         self.X_test = scaler.transform(self.X_test)
 
-og_data = pd.read_csv(os.path.join(module_dir, '../','data/data.csv'))
-og_labels = pd.read_csv(os.path.join(module_dir, '../','data/labels.csv'))
+# og_data = pd.read_csv(os.path.join(module_dir, '../','data/data.csv'))
+# og_labels = pd.read_csv(os.path.join(module_dir, '../','data/labels.csv'))
+#
+# X_train, X_test, y_train, y_test = train_test_split(og_data,og_labels,test_size=0.2,random_state=42)
+# X_train, X_val, y_train, y_val = train_test_split(X_train,y_train,test_size=0.25,random_state=42)
+# X_train = scaler.fit_transform(X_train)
+# X_val = scaler.transform(X_val)
+# X_test = scaler.transform(X_test)
 
-X_train, X_test, y_train, y_test = train_test_split(og_data,og_labels,test_size=0.2,random_state=42)
-X_train, X_val, y_train, y_val = train_test_split(X_train,y_train,test_size=0.25,random_state=42)
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_val = scaler.transform(X_val)
-X_test = scaler.transform(X_test)
+def plot_roc_curve(y_val, predictions, label_name):
+    fpr, tpr, thresholds = roc_curve(y_val, predictions)
+    auc = roc_auc_score(y_val, predictions)
+
+    plt.figure(figsize=(20, 20), dpi=300)
+    plt.title('ROC Curve')
+    plt.plot([0, 1], [0, 1], linestyle='--')
+    plt.plot(fpr, tpr, 'c', marker='.', label=f'{label_name} = {auc:.3f}')
+    plt.legend(loc='lower right')
+    plt.ylabel('True Positive Rate')
+    plt.xlabel('False Positive Rate')
+
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='png')
+    buffer.seek(0)
+    image_png = buffer.getvalue()
+    buffer.close()
+    plt.close()
+    return base64.b64encode(image_png).decode('utf-8')
+
+def plot_confusion_matrix(y_val, y_pred):
+    # Confusion Matrix
+    cm = confusion_matrix(y_val, y_pred)
+    plt.figure(figsize=(20, 20), dpi=300)
+    sns.set(font_scale=5)  # Adjust the font scale for better visibility
+    sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
+    plt.xlabel('Predicted labels')
+    plt.ylabel('True labels')
+    plt.title('Confusion Matrix')
+
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='png')
+    buffer.seek(0)
+    image_png = buffer.getvalue()
+    buffer.close()
+    plt.close()
+    return base64.b64encode(image_png).decode('utf-8')
 
 class DashboardView(View):
     template_name = 'core/dashboard.html'
+    dataset = None
 
     def post(self, request, *args, **kwargs):
-        uploaded_file = request.FILES.get('file')
-        request.session['file_name'] = uploaded_file.name
-        if uploaded_file:
+        uploaded_data_file = request.FILES.get('data_file')
+        uploaded_labels_file = request.FILES.get('labels_file')
+        df_data_path = uploaded_data_file.temporary_file_path()
+        df_labels_path = uploaded_labels_file.temporary_file_path()
+        self.__class__.dataset = BaseDatasetClass(data_path=df_data_path, label_path=df_labels_path)
+        if uploaded_labels_file and uploaded_data_file:
             report = {
                 'success': True
             }
@@ -77,65 +119,30 @@ class CNNView(TemplateView):
     def get(self, request, *args, **kwargs):
         algo_path = os.path.join(module_dir, '../', 'model', 'DeepLearning.h5')
         model = load_model(algo_path)
+        dataset = DashboardView.dataset
+        if dataset is None:
+            return redirect('/')
 
         # Evaluate the model on the val set
-        test_loss, test_acc, test_precision, test_recall = model.evaluate(X_test, y_test)
+        test_loss, test_acc, test_precision, test_recall = model.evaluate(dataset.X_test, dataset.y_test)
 
         print('Test loss:', test_loss)
         print('Test accuracy:', test_acc)
 
-        predictions = model.predict(X_val)
+        predictions = model.predict(dataset.X_val)
         print("Predictions", predictions)
 
 
         # Convert predictions to binary class labels
         y_pred_labels = [1 if x > 0.5 else 0 for x in predictions]
-        classificationReport = classification_report(y_true=y_val, y_pred=y_pred_labels).replace('\n', '<br>')
+        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred_labels).replace('\n', '<br>')
 
         data = {
             'classificationReport': classificationReport,
-            'confusion_matrix_string': self.plot_confusion_matrix(y_val, y_pred_labels),
-            'roc_curve_string': self.plot_roc_curve(predictions)
+            'confusion_matrix_string': plot_confusion_matrix(y_val=dataset.y_val, y_pred=y_pred_labels),
+            'roc_curve_string': plot_roc_curve(y_val=dataset.y_val, predictions=predictions, label_name='cnn')
         }
         return render(request, self.template_name, data)
-
-    def plot_roc_curve(self, predictions):
-        fpr, tpr, thresholds = roc_curve(y_val, predictions)
-        auc = roc_auc_score(y_val, predictions)
-
-        plt.figure(figsize=(20, 20), dpi=300)
-        plt.title('ROC Curve')
-        plt.plot([0, 1], [0, 1], linestyle='--')
-        plt.plot(fpr, tpr, 'c', marker='.', label=f'cnn = %0.3f' % auc)
-        plt.legend(loc='lower right')
-        plt.ylabel('True Positive Rate')
-        plt.xlabel('False Positive Rate')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
-
-    def plot_confusion_matrix(self, y_val, y_pred):
-        # Confusion Matrix
-        cm = confusion_matrix(y_val, y_pred)
-        plt.figure(figsize=(20, 20), dpi=300)
-        sns.set(font_scale=5)  # Adjust the font scale for better visibility
-        sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-        plt.xlabel('Predicted labels')
-        plt.ylabel('True labels')
-        plt.title('Confusion Matrix')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -151,36 +158,40 @@ class SVMView(TemplateView):
         with open(algo_path, 'rb') as f:
             algo = pickle.load(f)
 
-        y_pred = algo.predict(X_val)
+        dataset = DashboardView.dataset
+        if dataset is None:
+            return redirect('/')
+
+        y_pred = algo.predict(dataset.X_val)
 
         # Calculate accuracy
-        accuracy = accuracy_score(y_true=y_val, y_pred=y_pred) * 100
+        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
         print(f"Accuracy with SVM: {accuracy:.2f}%")
         accuracy = round(accuracy, 2)
 
         # Calculate precision
-        precision = precision_score(y_val, y_pred) * 100
+        precision = precision_score(dataset.y_val, y_pred) * 100
         precision = round(precision, 2)
         print('Precision:', precision)
 
         # Calculate recall
-        recall = recall_score(y_val, y_pred) * 100
+        recall = recall_score(dataset.y_val, y_pred) * 100
         recall = round(recall, 2)
         print('Recall:', recall)
 
         # Calculate F1-score
-        f1 = f1_score(y_val, y_pred) * 100
+        f1 = f1_score(dataset.y_val, y_pred) * 100
         f1 = round(f1, 2)
         print('F1-Score:', f1)
 
         # Calculate area under ROC curve
-        roc_auc = roc_auc_score(y_val, y_pred) * 100
+        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
         roc_auc = round(roc_auc, 2)
         print('ROC AUC Score:', roc_auc)
 
-        probs = algo.predict_proba(X_val)
+        probs = algo.predict_proba(dataset.X_val)
         probs = probs[:, 1]
-        classificationReport = classification_report(y_true=y_val, y_pred=y_pred).replace('\n', '<br>')
+        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
         data = {
             'classificationReport': classificationReport,
             'accuracy': accuracy,
@@ -188,48 +199,48 @@ class SVMView(TemplateView):
             'recall': recall,
             'f1': f1,
             'roc_auc': roc_auc,
-            'confusion_matrix_string': self.plot_confusion_matrix(y_val, y_pred),
-            'roc_curve_string': self.plot_roc_curve(probs)
+            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
+            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='svm')
         }
         return render(request, self.template_name, data)
 
-    def plot_roc_curve(self, probs):
-        svm_fpr, svm_tpr, thresholds = roc_curve(y_val, probs)
-        svm_auc = roc_auc_score(y_val, probs)
-
-        plt.figure(figsize=(20, 20), dpi=300)
-        plt.title('ROC Curve')
-        plt.plot([0, 1], [0, 1], linestyle='--')
-        plt.plot(svm_fpr, svm_tpr, 'c', marker='.', label=f'svm = %0.3f' % svm_auc)
-        plt.legend(loc='lower right')
-        plt.ylabel('True Positive Rate')
-        plt.xlabel('False Positive Rate')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
-
-    def plot_confusion_matrix(self, y_val, y_pred):
-        # Confusion Matrix
-        cm = confusion_matrix(y_val, y_pred)
-        plt.figure(figsize=(20, 20), dpi=300)
-        sns.set(font_scale=5)  # Adjust the font scale for better visibility
-        sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-        plt.xlabel('Predicted labels')
-        plt.ylabel('True labels')
-        plt.title('Confusion Matrix')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
+    # def plot_roc_curve(self, y_val, probs):
+    #     svm_fpr, svm_tpr, thresholds = roc_curve(y_val, probs)
+    #     svm_auc = roc_auc_score(y_val, probs)
+    #
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     plt.title('ROC Curve')
+    #     plt.plot([0, 1], [0, 1], linestyle='--')
+    #     plt.plot(svm_fpr, svm_tpr, 'c', marker='.', label=f'svm = %0.3f' % svm_auc)
+    #     plt.legend(loc='lower right')
+    #     plt.ylabel('True Positive Rate')
+    #     plt.xlabel('False Positive Rate')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
+    #
+    # def plot_confusion_matrix(self, y_val, y_pred):
+    #     # Confusion Matrix
+    #     cm = confusion_matrix(y_val, y_pred)
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
+    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
+    #     plt.xlabel('Predicted labels')
+    #     plt.ylabel('True labels')
+    #     plt.title('Confusion Matrix')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -245,36 +256,40 @@ class KNNView(TemplateView):
         with open(algo_path, 'rb') as f:
             algo = pickle.load(f)
 
-        y_pred = algo.predict(X_val)
+        dataset = DashboardView.dataset
+        if dataset is None:
+            return redirect('/')
+
+        y_pred = algo.predict(dataset.X_val)
 
         # Calculate accuracy
-        accuracy = accuracy_score(y_true=y_val, y_pred=y_pred) * 100
+        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
         print(f"Accuracy: {accuracy:.2f}%")
         accuracy = round(accuracy, 2)
 
         # Calculate precision
-        precision = precision_score(y_val, y_pred) * 100
+        precision = precision_score(dataset.y_val, y_pred) * 100
         precision = round(precision, 2)
         print('Precision:', precision)
 
         # Calculate recall
-        recall = recall_score(y_val, y_pred) * 100
+        recall = recall_score(dataset.y_val, y_pred) * 100
         recall = round(recall, 2)
         print('Recall:', recall)
 
         # Calculate F1-score
-        f1 = f1_score(y_val, y_pred) * 100
+        f1 = f1_score(dataset.y_val, y_pred) * 100
         f1 = round(f1, 2)
         print('F1-Score:', f1)
 
         # Calculate area under ROC curve
-        roc_auc = roc_auc_score(y_val, y_pred) * 100
+        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
         roc_auc = round(roc_auc, 2)
         print('ROC AUC Score:', roc_auc)
 
-        probs = algo.predict_proba(X_val)
+        probs = algo.predict_proba(dataset.X_val)
         probs = probs[:, 1]
-        classificationReport = classification_report(y_true=y_val, y_pred=y_pred).replace('\n', '<br>')
+        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
         data = {
             'classificationReport': classificationReport,
             'accuracy': accuracy,
@@ -282,48 +297,48 @@ class KNNView(TemplateView):
             'recall': recall,
             'f1': f1,
             'roc_auc': roc_auc,
-            'confusion_matrix_string': self.plot_confusion_matrix(y_val, y_pred),
-            'roc_curve_string': self.plot_roc_curve(probs)
+            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
+            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='knn')
         }
         return render(request, self.template_name, data)
 
-    def plot_roc_curve(self, probs):
-        fpr, tpr, thresholds = roc_curve(y_val, probs)
-        auc = roc_auc_score(y_val, probs)
-
-        plt.figure(figsize=(20, 20), dpi=300)
-        plt.title('ROC Curve')
-        plt.plot([0, 1], [0, 1], linestyle='--')
-        plt.plot(fpr, tpr, 'c', marker='.', label=f'knn = %0.3f' % auc)
-        plt.legend(loc='lower right')
-        plt.ylabel('True Positive Rate')
-        plt.xlabel('False Positive Rate')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
-
-    def plot_confusion_matrix(self, y_val, y_pred):
-        # Confusion Matrix
-        cm = confusion_matrix(y_val, y_pred)
-        plt.figure(figsize=(20, 20), dpi=300)
-        sns.set(font_scale=5)  # Adjust the font scale for better visibility
-        sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-        plt.xlabel('Predicted labels')
-        plt.ylabel('True labels')
-        plt.title('Confusion Matrix')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
+    # def plot_roc_curve(self, y_val, probs):
+    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
+    #     auc = roc_auc_score(y_val, probs)
+    #
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     plt.title('ROC Curve')
+    #     plt.plot([0, 1], [0, 1], linestyle='--')
+    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'knn = %0.3f' % auc)
+    #     plt.legend(loc='lower right')
+    #     plt.ylabel('True Positive Rate')
+    #     plt.xlabel('False Positive Rate')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
+    #
+    # def plot_confusion_matrix(self, y_val, y_pred):
+    #     # Confusion Matrix
+    #     cm = confusion_matrix(y_val, y_pred)
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
+    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
+    #     plt.xlabel('Predicted labels')
+    #     plt.ylabel('True labels')
+    #     plt.title('Confusion Matrix')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -338,36 +353,40 @@ class NaiveBayesView(TemplateView):
         with open(algo_path, 'rb') as f:
             algo = pickle.load(f)
 
-        y_pred = algo.predict(X_val)
+        dataset = DashboardView.dataset
+        if dataset is None:
+            return redirect('/')
+
+        y_pred = algo.predict(dataset.X_val)
 
         # Calculate accuracy
-        accuracy = accuracy_score(y_true=y_val, y_pred=y_pred) * 100
+        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
         print(f"Accuracy: {accuracy:.2f}%")
         accuracy = round(accuracy, 2)
 
         # Calculate precision
-        precision = precision_score(y_val, y_pred) * 100
+        precision = precision_score(dataset.y_val, y_pred) * 100
         precision = round(precision, 2)
         print('Precision:', precision)
 
         # Calculate recall
-        recall = recall_score(y_val, y_pred) * 100
+        recall = recall_score(dataset.y_val, y_pred) * 100
         recall = round(recall, 2)
         print('Recall:', recall)
 
         # Calculate F1-score
-        f1 = f1_score(y_val, y_pred) * 100
+        f1 = f1_score(dataset.y_val, y_pred) * 100
         f1 = round(f1, 2)
         print('F1-Score:', f1)
 
         # Calculate area under ROC curve
-        roc_auc = roc_auc_score(y_val, y_pred) * 100
+        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
         roc_auc = round(roc_auc, 2)
         print('ROC AUC Score:', roc_auc)
 
-        probs = algo.predict_proba(X_val)
+        probs = algo.predict_proba(dataset.X_val)
         probs = probs[:, 1]
-        classificationReport = classification_report(y_true=y_val, y_pred=y_pred).replace('\n', '<br>')
+        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
         data = {
             'classificationReport': classificationReport,
             'accuracy': accuracy,
@@ -375,48 +394,48 @@ class NaiveBayesView(TemplateView):
             'recall': recall,
             'f1': f1,
             'roc_auc': roc_auc,
-            'confusion_matrix_string': self.plot_confusion_matrix(y_val, y_pred),
-            'roc_curve_string': self.plot_roc_curve(probs)
+            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
+            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='naive')
         }
         return render(request, self.template_name, data)
 
-    def plot_roc_curve(self, probs):
-        fpr, tpr, thresholds = roc_curve(y_val, probs)
-        auc = roc_auc_score(y_val, probs)
-
-        plt.figure(figsize=(20, 20), dpi=300)
-        plt.title('ROC Curve')
-        plt.plot([0, 1], [0, 1], linestyle='--')
-        plt.plot(fpr, tpr, 'c', marker='.', label=f'naive = %0.3f' % auc)
-        plt.legend(loc='lower right')
-        plt.ylabel('True Positive Rate')
-        plt.xlabel('False Positive Rate')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
-
-    def plot_confusion_matrix(self, y_val, y_pred):
-        # Confusion Matrix
-        cm = confusion_matrix(y_val, y_pred)
-        plt.figure(figsize=(20, 20), dpi=300)
-        sns.set(font_scale=5)  # Adjust the font scale for better visibility
-        sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-        plt.xlabel('Predicted labels')
-        plt.ylabel('True labels')
-        plt.title('Confusion Matrix')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
+    # def plot_roc_curve(self, y_val, probs):
+    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
+    #     auc = roc_auc_score(y_val, probs)
+    #
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     plt.title('ROC Curve')
+    #     plt.plot([0, 1], [0, 1], linestyle='--')
+    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'naive = %0.3f' % auc)
+    #     plt.legend(loc='lower right')
+    #     plt.ylabel('True Positive Rate')
+    #     plt.xlabel('False Positive Rate')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
+    #
+    # def plot_confusion_matrix(self, y_val, y_pred):
+    #     # Confusion Matrix
+    #     cm = confusion_matrix(y_val, y_pred)
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
+    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
+    #     plt.xlabel('Predicted labels')
+    #     plt.ylabel('True labels')
+    #     plt.title('Confusion Matrix')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -431,36 +450,40 @@ class RandomForestView(TemplateView):
         with open(algo_path, 'rb') as f:
             algo = pickle.load(f)
 
-        y_pred = algo.predict(X_val)
+        dataset = DashboardView.dataset
+        if dataset is None:
+            return redirect('/')
+
+        y_pred = algo.predict(dataset.X_val)
 
         # Calculate accuracy
-        accuracy = accuracy_score(y_true=y_val, y_pred=y_pred) * 100
+        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
         print(f"Accuracy: {accuracy:.2f}%")
         accuracy = round(accuracy, 2)
 
         # Calculate precision
-        precision = precision_score(y_val, y_pred) * 100
+        precision = precision_score(dataset.y_val, y_pred) * 100
         precision = round(precision, 2)
         print('Precision:', precision)
 
         # Calculate recall
-        recall = recall_score(y_val, y_pred) * 100
+        recall = recall_score(dataset.y_val, y_pred) * 100
         recall = round(recall, 2)
         print('Recall:', recall)
 
         # Calculate F1-score
-        f1 = f1_score(y_val, y_pred) * 100
+        f1 = f1_score(dataset.y_val, y_pred) * 100
         f1 = round(f1, 2)
         print('F1-Score:', f1)
 
         # Calculate area under ROC curve
-        roc_auc = roc_auc_score(y_val, y_pred) * 100
+        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
         roc_auc = round(roc_auc, 2)
         print('ROC AUC Score:', roc_auc)
 
-        probs = algo.predict_proba(X_val)
+        probs = algo.predict_proba(dataset.X_val)
         probs = probs[:, 1]
-        classificationReport = classification_report(y_true=y_val, y_pred=y_pred).replace('\n', '<br>')
+        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
         data = {
             'classificationReport': classificationReport,
             'accuracy': accuracy,
@@ -468,48 +491,48 @@ class RandomForestView(TemplateView):
             'recall': recall,
             'f1': f1,
             'roc_auc': roc_auc,
-            'confusion_matrix_string': self.plot_confusion_matrix(y_val, y_pred),
-            'roc_curve_string': self.plot_roc_curve(probs)
+            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
+            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='rf')
         }
         return render(request, self.template_name, data)
 
-    def plot_roc_curve(self, probs):
-        fpr, tpr, thresholds = roc_curve(y_val, probs)
-        auc = roc_auc_score(y_val, probs)
-
-        plt.figure(figsize=(20, 20), dpi=300)
-        plt.title('ROC Curve')
-        plt.plot([0, 1], [0, 1], linestyle='--')
-        plt.plot(fpr, tpr, 'c', marker='.', label=f'rf = %0.3f' % auc)
-        plt.legend(loc='lower right')
-        plt.ylabel('True Positive Rate')
-        plt.xlabel('False Positive Rate')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
-
-    def plot_confusion_matrix(self, y_val, y_pred):
-        # Confusion Matrix
-        cm = confusion_matrix(y_val, y_pred)
-        plt.figure(figsize=(20, 20), dpi=300)
-        sns.set(font_scale=5)  # Adjust the font scale for better visibility
-        sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-        plt.xlabel('Predicted labels')
-        plt.ylabel('True labels')
-        plt.title('Confusion Matrix')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
+    # def plot_roc_curve(self, y_val, probs):
+    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
+    #     auc = roc_auc_score(y_val, probs)
+    #
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     plt.title('ROC Curve')
+    #     plt.plot([0, 1], [0, 1], linestyle='--')
+    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'rf = %0.3f' % auc)
+    #     plt.legend(loc='lower right')
+    #     plt.ylabel('True Positive Rate')
+    #     plt.xlabel('False Positive Rate')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
+    #
+    # def plot_confusion_matrix(self, y_val, y_pred):
+    #     # Confusion Matrix
+    #     cm = confusion_matrix(y_val, y_pred)
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
+    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
+    #     plt.xlabel('Predicted labels')
+    #     plt.ylabel('True labels')
+    #     plt.title('Confusion Matrix')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -524,36 +547,40 @@ class XgBoostView(TemplateView):
         with open(algo_path, 'rb') as f:
             algo = pickle.load(f)
 
-        y_pred = algo.predict(X_val)
+        dataset = DashboardView.dataset
+        if dataset is None:
+            return redirect('/')
+
+        y_pred = algo.predict(dataset.X_val)
 
         # Calculate accuracy
-        accuracy = accuracy_score(y_true=y_val, y_pred=y_pred) * 100
+        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
         print(f"Accuracy: {accuracy:.2f}%")
         accuracy = round(accuracy, 2)
 
         # Calculate precision
-        precision = precision_score(y_val, y_pred) * 100
+        precision = precision_score(dataset.y_val, y_pred) * 100
         precision = round(precision, 2)
         print('Precision:', precision)
 
         # Calculate recall
-        recall = recall_score(y_val, y_pred) * 100
+        recall = recall_score(dataset.y_val, y_pred) * 100
         recall = round(recall, 2)
         print('Recall:', recall)
 
         # Calculate F1-score
-        f1 = f1_score(y_val, y_pred) * 100
+        f1 = f1_score(dataset.y_val, y_pred) * 100
         f1 = round(f1, 2)
         print('F1-Score:', f1)
 
         # Calculate area under ROC curve
-        roc_auc = roc_auc_score(y_val, y_pred) * 100
+        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
         roc_auc = round(roc_auc, 2)
         print('ROC AUC Score:', roc_auc)
 
-        probs = algo.predict_proba(X_val)
+        probs = algo.predict_proba(dataset.X_val)
         probs = probs[:, 1]
-        classificationReport = classification_report(y_true=y_val, y_pred=y_pred).replace('\n', '<br>')
+        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
         data = {
             'classificationReport': classificationReport,
             'accuracy': accuracy,
@@ -561,48 +588,48 @@ class XgBoostView(TemplateView):
             'recall': recall,
             'f1': f1,
             'roc_auc': roc_auc,
-            'confusion_matrix_string': self.plot_confusion_matrix(y_val, y_pred),
-            'roc_curve_string': self.plot_roc_curve(probs)
+            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
+            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='xgboost')
         }
         return render(request, self.template_name, data)
 
-    def plot_roc_curve(self, probs):
-        fpr, tpr, thresholds = roc_curve(y_val, probs)
-        auc = roc_auc_score(y_val, probs)
-
-        plt.figure(figsize=(20, 20), dpi=300)
-        plt.title('ROC Curve')
-        plt.plot([0, 1], [0, 1], linestyle='--')
-        plt.plot(fpr, tpr, 'c', marker='.', label=f'xgboost = %0.3f' % auc)
-        plt.legend(loc='lower right')
-        plt.ylabel('True Positive Rate')
-        plt.xlabel('False Positive Rate')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
-
-    def plot_confusion_matrix(self, y_val, y_pred):
-        # Confusion Matrix
-        cm = confusion_matrix(y_val, y_pred)
-        plt.figure(figsize=(20, 20), dpi=300)
-        sns.set(font_scale=5)  # Adjust the font scale for better visibility
-        sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-        plt.xlabel('Predicted labels')
-        plt.ylabel('True labels')
-        plt.title('Confusion Matrix')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
+    # def plot_roc_curve(self, y_val, probs):
+    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
+    #     auc = roc_auc_score(y_val, probs)
+    #
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     plt.title('ROC Curve')
+    #     plt.plot([0, 1], [0, 1], linestyle='--')
+    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'xgboost = %0.3f' % auc)
+    #     plt.legend(loc='lower right')
+    #     plt.ylabel('True Positive Rate')
+    #     plt.xlabel('False Positive Rate')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
+    #
+    # def plot_confusion_matrix(self, y_val, y_pred):
+    #     # Confusion Matrix
+    #     cm = confusion_matrix(y_val, y_pred)
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
+    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
+    #     plt.xlabel('Predicted labels')
+    #     plt.ylabel('True labels')
+    #     plt.title('Confusion Matrix')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -618,36 +645,40 @@ class LogisticView(TemplateView):
         with open(algo_path, 'rb') as f:
             algo = pickle.load(f)
 
-        y_pred = algo.predict(X_val)
+        dataset = DashboardView.dataset
+        if dataset is None:
+            return redirect('/')
+
+        y_pred = algo.predict(dataset.X_val)
 
         # Calculate accuracy
-        accuracy = accuracy_score(y_true=y_val, y_pred=y_pred) * 100
+        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
         print(f"Accuracy with Logistic: {accuracy:.2f}%")
         accuracy = round(accuracy, 2)
 
         # Calculate precision
-        precision = precision_score(y_val, y_pred) * 100
+        precision = precision_score(dataset.y_val, y_pred) * 100
         precision = round(precision, 2)
         print('Precision:', precision)
 
         # Calculate recall
-        recall = recall_score(y_val, y_pred) * 100
+        recall = recall_score(dataset.y_val, y_pred) * 100
         recall = round(recall, 2)
         print('Recall:', recall)
 
         # Calculate F1-score
-        f1 = f1_score(y_val, y_pred) * 100
+        f1 = f1_score(dataset.y_val, y_pred) * 100
         f1 = round(f1, 2)
         print('F1-Score:', f1)
 
         # Calculate area under ROC curve
-        roc_auc = roc_auc_score(y_val, y_pred) * 100
+        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
         roc_auc = round(roc_auc, 2)
         print('ROC AUC Score:', roc_auc)
 
-        probs = algo.predict_proba(X_val)
+        probs = algo.predict_proba(dataset.X_val)
         probs = probs[:, 1]
-        classificationReport = classification_report(y_true=y_val, y_pred=y_pred).replace('\n', '<br>')
+        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
         data = {
             'classificationReport': classificationReport,
             'accuracy': accuracy,
@@ -655,48 +686,48 @@ class LogisticView(TemplateView):
             'recall': recall,
             'f1': f1,
             'roc_auc': roc_auc,
-            'confusion_matrix_string': self.plot_confusion_matrix(y_val, y_pred),
-            'roc_curve_string': self.plot_roc_curve(probs)
+            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
+            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='log')
         }
         return render(request, self.template_name, data)
 
-    def plot_roc_curve(self, probs):
-        fpr, tpr, thresholds = roc_curve(y_val, probs)
-        auc = roc_auc_score(y_val, probs)
-
-        plt.figure(figsize=(20, 20), dpi=300)
-        plt.title('ROC Curve')
-        plt.plot([0, 1], [0, 1], linestyle='--')
-        plt.plot(fpr, tpr, 'c', marker='.', label=f'svm = %0.3f' % auc)
-        plt.legend(loc='lower right')
-        plt.ylabel('True Positive Rate')
-        plt.xlabel('False Positive Rate')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
-
-    def plot_confusion_matrix(self, y_val, y_pred):
-        # Confusion Matrix
-        cm = confusion_matrix(y_val, y_pred)
-        plt.figure(figsize=(20, 20), dpi=300)
-        sns.set(font_scale=5)  # Adjust the font scale for better visibility
-        sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-        plt.xlabel('Predicted labels')
-        plt.ylabel('True labels')
-        plt.title('Confusion Matrix')
-
-        buffer = io.BytesIO()
-        plt.savefig(buffer, format='png')
-        buffer.seek(0)
-        image_png = buffer.getvalue()
-        buffer.close()
-        plt.close()
-        return base64.b64encode(image_png).decode('utf-8')
+    # def plot_roc_curve(self, y_val, probs):
+    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
+    #     auc = roc_auc_score(y_val, probs)
+    #
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     plt.title('ROC Curve')
+    #     plt.plot([0, 1], [0, 1], linestyle='--')
+    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'svm = %0.3f' % auc)
+    #     plt.legend(loc='lower right')
+    #     plt.ylabel('True Positive Rate')
+    #     plt.xlabel('False Positive Rate')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
+    #
+    # def plot_confusion_matrix(self, y_val, y_pred):
+    #     # Confusion Matrix
+    #     cm = confusion_matrix(y_val, y_pred)
+    #     plt.figure(figsize=(20, 20), dpi=300)
+    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
+    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
+    #     plt.xlabel('Predicted labels')
+    #     plt.ylabel('True labels')
+    #     plt.title('Confusion Matrix')
+    #
+    #     buffer = io.BytesIO()
+    #     plt.savefig(buffer, format='png')
+    #     buffer.seek(0)
+    #     image_png = buffer.getvalue()
+    #     buffer.close()
+    #     plt.close()
+    #     return base64.b64encode(image_png).decode('utf-8')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -718,11 +749,11 @@ class VisualizationView(TemplateView):
 
 class BestModelView(TemplateView):
     template_name = 'core/best_model.html'
+    models_dataframe = pd.read_csv(os.path.join(module_dir, '../', 'data/model_acc_dataframe.csv'))
 
     def get(self, request, *args, **kwargs):
-        models_dataframe = pd.read_csv(os.path.join(module_dir, '../', 'data/model_acc_dataframe.csv'))
 
-        view = models_dataframe.iloc[0]['View']
+        view = self.models_dataframe.iloc[0]['View']
         view = eval(view).as_view()
 
         return view(request, *args, **kwargs)
@@ -730,8 +761,14 @@ class BestModelView(TemplateView):
     def post(self, request, *args, **kwargs):
         patient_number = request.POST.get('patient_number')
 
-        algo_path = os.path.join(module_dir, '../', 'model', 'DeepLearning.h5')
-        model = load_model(algo_path)
+        saved_model_name = self.models_dataframe.iloc[0]['SavedModelName']
+
+        algo_path = os.path.join(module_dir, '../', 'model', saved_model_name)
+        if saved_model_name == 'DeepLearning.h5':
+            model = load_model(algo_path)
+        else:
+            with open(saved_model_name, 'rb') as f:
+                model = pickle.load(f)
 
         data_path = os.path.join(module_dir, '../', 'Epileptic Seizure Recognition.csv')
         dataset = pd.read_csv(data_path)
@@ -739,7 +776,7 @@ class BestModelView(TemplateView):
         dataset = dataset[dataset['Unnamed'].str.split('.').str[2] == patient_number]
         data_x = dataset.drop(['Unnamed', 'y'], axis=1).copy()
         data_x = scaler.transform(data_x)
-        data_y = dataset['y'].replace([2,3,4,5],0).copy()
+        # data_y = dataset['y'].replace([2,3,4,5],0).copy()
 
         predictions = model.predict(data_x)
         binary_predictions = [1 if prediction > 0.5 else 0 for prediction in predictions]
