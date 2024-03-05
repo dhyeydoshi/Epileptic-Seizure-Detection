@@ -13,9 +13,16 @@
                 <h1 class="fw-bolder text-center pt-2 pb-1">Epileptic Seizure Detection</h1>
             </div>
         </div>
+        {% if temporary_message is not None %}
+        <div class="row my-1">
+            <div class="card card-body border-0 shadow">
+                <h3 class="text-warning fw-bolder text-center pt-2 pb-1">{{ temporary_message }}</h3>
+            </div>
+        </div>
+        {% endif %}
         <div class="row my-2">
             <div class="card card-body border-0 shadow">
-            <strong class="text-info h4 fw-black">Note: Upload the Data and Labels</strong>
+            <strong class="text-info h4 fw-black">Note: Upload the Data and Labels before proceeding </strong>
                 <div class="row">
                     <div class="col-lg-3 mb-4">
                         <h3 class="fw-bolder  pt-2 pb-1">File Upload</h3>

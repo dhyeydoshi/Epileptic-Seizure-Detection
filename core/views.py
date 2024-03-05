@@ -16,11 +16,11 @@ from tensorflow.keras.models import load_model
 
 from django.views import View
 from django.views.generic import TemplateView
+from django.contrib import messages
 
 
 # Create your views here.
 module_dir = os.path.dirname(__file__)
-scaler = StandardScaler()
 class BaseDatasetClass:
 
     def __init__(self, data_path=None, label_path=None):
@@ -108,7 +108,11 @@ class DashboardView(View):
             return render(request, self.template_name, {'error': True})
 
     def get(self, request, *args, **kwargs):
-        return render(request, self.template_name)
+        messages_to_display = messages.get_messages(request)
+        temporary_message = None
+        for message in messages_to_display:
+            temporary_message = message
+        return render(request, self.template_name, {'temporary_message': temporary_message})
 
 
 
@@ -121,6 +125,7 @@ class CNNView(TemplateView):
         model = load_model(algo_path)
         dataset = DashboardView.dataset
         if dataset is None:
+            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
             return redirect('/')
 
         # Evaluate the model on the val set
@@ -160,6 +165,7 @@ class SVMView(TemplateView):
 
         dataset = DashboardView.dataset
         if dataset is None:
+            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
             return redirect('/')
 
         y_pred = algo.predict(dataset.X_val)
@@ -258,6 +264,7 @@ class KNNView(TemplateView):
 
         dataset = DashboardView.dataset
         if dataset is None:
+            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
             return redirect('/')
 
         y_pred = algo.predict(dataset.X_val)
@@ -355,6 +362,7 @@ class NaiveBayesView(TemplateView):
 
         dataset = DashboardView.dataset
         if dataset is None:
+            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
             return redirect('/')
 
         y_pred = algo.predict(dataset.X_val)
@@ -452,6 +460,7 @@ class RandomForestView(TemplateView):
 
         dataset = DashboardView.dataset
         if dataset is None:
+            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
             return redirect('/')
 
         y_pred = algo.predict(dataset.X_val)
@@ -549,6 +558,7 @@ class XgBoostView(TemplateView):
 
         dataset = DashboardView.dataset
         if dataset is None:
+            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
             return redirect('/')
 
         y_pred = algo.predict(dataset.X_val)
@@ -647,6 +657,7 @@ class LogisticView(TemplateView):
 
         dataset = DashboardView.dataset
         if dataset is None:
+            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
             return redirect('/')
 
         y_pred = algo.predict(dataset.X_val)
@@ -751,12 +762,15 @@ class BestModelView(TemplateView):
     template_name = 'core/best_model.html'
     models_dataframe = pd.read_csv(os.path.join(module_dir, '../', 'data/model_acc_dataframe.csv'))
 
-    def get(self, request, *args, **kwargs):
+    # def get(self, request, *args, **kwargs):
+    #
+    #     view = self.models_dataframe.iloc[0]['View']
+    #     view = eval(view).as_view()
+    #
+    #     return view(request, *args, **kwargs)
 
-        view = self.models_dataframe.iloc[0]['View']
-        view = eval(view).as_view()
-
-        return view(request, *args, **kwargs)
+    def get(self,request, *args, **kwargs):
+        return render(request, self.template_name, {'success': False, 'best_model_name': self.models_dataframe.iloc[0]['Model']})
 
     def post(self, request, *args, **kwargs):
         patient_number = request.POST.get('patient_number')
@@ -764,18 +778,19 @@ class BestModelView(TemplateView):
         saved_model_name = self.models_dataframe.iloc[0]['SavedModelName']
 
         algo_path = os.path.join(module_dir, '../', 'model', saved_model_name)
+        scaler1 = StandardScaler()
         if saved_model_name == 'DeepLearning.h5':
             model = load_model(algo_path)
         else:
             with open(saved_model_name, 'rb') as f:
                 model = pickle.load(f)
-
-        data_path = os.path.join(module_dir, '../', 'Epileptic Seizure Recognition.csv')
+        print('Print: ',module_dir)
+        data_path = os.path.join(module_dir, '../', 'data/Epileptic Seizure Recognition.csv')
         dataset = pd.read_csv(data_path)
-
-        dataset = dataset[dataset['Unnamed'].str.split('.').str[2] == patient_number]
+        dataset = dataset[dataset['Unnamed'].str.split('.').str[2] == patient_number].copy()
         data_x = dataset.drop(['Unnamed', 'y'], axis=1).copy()
-        data_x = scaler.transform(data_x)
+        scaler1.fit(data_x)
+        data_x = scaler1.transform(data_x)
         # data_y = dataset['y'].replace([2,3,4,5],0).copy()
 
         predictions = model.predict(data_x)
@@ -796,7 +811,8 @@ class BestModelView(TemplateView):
 
         data = {
             'output_string': output_string,
-            'success': True
+            'success': True,
+            'best_model_name': self.models_dataframe.iloc[0]['Model']
         }
         return render(request, self.template_name, data)
 

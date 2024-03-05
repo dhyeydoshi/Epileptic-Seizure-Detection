@@ -8,10 +8,11 @@
 
 {% block content %}
     <div class="container-fluid py-4">
-        <h1 class="fw-bolder text-center pt-2 pb-1">Prediction</h1>
+        <h2 class="fw-bolder text-center pt-2 pb-1">Best Model: {{ best_model_name }}</h2>
+        <h3 class="fw-bolder text-center pt-2 pb-1">Prediction</h3>
         <div class="mb-4" id="predict_patient">
             <div class="col-lg-6 mb-4 justify-content-center">
-                <h3 class="fw-bolder pt-2 pb-1">Patient Number</h3>
+                <h4 class="fw-bolder pt-2 pb-1">Patient Number</h4>
                 <form action="{% url 'core:best_model' %}" class="row" method="post">
                     {% csrf_token %}
                     <div class="col-auto">

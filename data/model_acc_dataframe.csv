@@ -1,11 +1,8 @@
 Model,Score,Precision,F1_Score,Recall,View,SavedModelName
-CNN,98.57,98.47,98.46,98.68,CNNView,DeepLearning.h5
-XgBoost,98.45,98.52,98.46,98.41,XgBoostView,XgBoostModel.pickle
-CNN,98.45,98.47,98.46,98.68,CNNView,DeepLearning.h5
-Random Forest,96.61,98.02,96.57,95.17,RandomForestView,RandomForestModel.pickle
-KNN,96.11,99.70,95.98,92.53,KNNView,KNNModel.pickle
-SVM,92.80,99.68,92.30,85.94,SVMView,SVMModel.pickle
-Naive Bayes,91.17,97.53,90.59,84.57,NaiveBayesView,SVMModel.pickle
-Logistic Regression,64.40,70.28,58.79,50.52,LogisticView,LogisticRegressionModel.pickle
-CNN,0.99,98.47,98.46,98.68,CNNView,DeepLearning.h5
-CNN,0.99,98.47,98.46,98.68,CNNView,DeepLearning.h5
+CNN,98.59,98.49,98.7,98.38,CNNView,DeepLearning.h5
+XgBoost,98.45,98.35,98.59,98.84,XgBoostView,XgBoostModel.pickle
+KNN,96.82,99.53,96.73,94.09,KNNView,KNNModel.pickle
+Random Forest,96.41,98.05,96.34,94.69,RandomForestView,RandomForestModel.pickle
+SVM,93.75,99.44,93.37,88,SVMView,SVMModel.pickle
+Naive Bayes,91.35,96.87,90.81,85.46,NaiveBayesView,SVMModel.pickle
+Logistic Regression,61.25,64.8,55.97,49.25,LogisticView,LogisticRegressionModel.pickle
