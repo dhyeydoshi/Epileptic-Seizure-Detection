@@ -51,3 +51,4 @@ statsmodels==0.13.5
 tqdm==4.65.0
 wheel==0.38.4
 gunicorn==22.0.0
+whitenoise
