@@ -32,7 +32,7 @@ else:
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = platform.node().lower() in 'desktop-5anoiua'
 
-ALLOWED_HOSTS = ['127.0.0.1', '']
+ALLOWED_HOSTS = ['epileptic-seizure-detection.onrender.com']
 
 # Application definition
 
@@ -112,7 +112,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/4.1/howto/static-files/
 
 STATIC_URL = 'static/'
-STATIC_ROOT = '../static_root/'
+STATIC_ROOT = 'static_root/'
 
 STATICFILES_DIRS = [
     BASE_DIR / "static/",
