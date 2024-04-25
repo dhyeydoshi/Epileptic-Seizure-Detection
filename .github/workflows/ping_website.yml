@@ -1,0 +1,15 @@
+name: Ping Website
+
+on:
+  schedule:
+    # Runs every 30 minutes
+    - cron:  '*/30 * * * *'
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping a website
+        run: |
+          #curl -I https://epileptic-seizure-detection.onrender.com
+          wget --spider -S "https://epileptic-seizure-detection.onrender.com" 2>&1 | grep "HTTP/" | awk '{print $2}' | tail -n 1
