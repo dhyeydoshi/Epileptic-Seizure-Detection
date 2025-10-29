@@ -1,818 +1,361 @@
-import base64
-import io
-
-from django.shortcuts import render, redirect
+"""
+Views for epileptic seizure detection application.
+Version 2.0 - Optimized with proper cleanup and caching.
+"""
 import os
 import pandas as pd
-import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score , accuracy_score , precision_score, recall_score ,confusion_matrix, classification_report, roc_curve, f1_score
-import pickle
-import seaborn as sns
-import matplotlib.pyplot as plt
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-
+from django.shortcuts import render, redirect
 from django.views import View
 from django.views.generic import TemplateView
 from django.contrib import messages
+from django.core.cache import cache
+from django.conf import settings
+import logging
+import tempfile
 
+from .services import (
+    DatasetProcessor, ModelEvaluator, MLModelService,
+    PredictionService, ModelCache
+)
+from .utils import PlotGenerator
+from .forms import DatasetUploadForm, PatientPredictionForm
 
-# Create your views here.
-module_dir = os.path.dirname(__file__)
-class BaseDatasetClass:
+logger = logging.getLogger(__name__)
 
-    def __init__(self, data_path=None, label_path=None):
-        if data_path and label_path:
-            self.data_path = data_path
-            self.label_path = label_path
-            self.update_data()
+# Global dataset instance (stored in session in production)
+_dataset_cache = {}
 
-    def update_data(self):
-        self.og_data = pd.read_csv(self.data_path)
-        self.og_labels = pd.read_csv(self.label_path)
-        self.split_data()
+def _save_uploaded_to_temp(uploaded_file):
+    """
+    Save an UploadedFile (InMemoryUploadedFile or TemporaryUploadedFile)
+    to a NamedTemporaryFile and return its path.
+    """
+    suffix = os.path.splitext(uploaded_file.name)[1] or ''
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        for chunk in uploaded_file.chunks():
+            tmp.write(chunk)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+    except Exception:
+        try:
+            tmp.close()
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+        raise
 
-    def split_data(self):
-        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(self.og_data, self.og_labels, test_size=0.2, random_state=42)
-        self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(self.X_train, self.y_train, test_size=0.25, random_state=42)
-        scaler = StandardScaler()
-        self.X_train = scaler.fit_transform(self.X_train)
-        self.X_val = scaler.transform(self.X_val)
-        self.X_test = scaler.transform(self.X_test)
-
-# og_data = pd.read_csv(os.path.join(module_dir, '../','data/data.csv'))
-# og_labels = pd.read_csv(os.path.join(module_dir, '../','data/labels.csv'))
-#
-# X_train, X_test, y_train, y_test = train_test_split(og_data,og_labels,test_size=0.2,random_state=42)
-# X_train, X_val, y_train, y_val = train_test_split(X_train,y_train,test_size=0.25,random_state=42)
-# X_train = scaler.fit_transform(X_train)
-# X_val = scaler.transform(X_val)
-# X_test = scaler.transform(X_test)
-
-def plot_roc_curve(y_val, predictions, label_name):
-    fpr, tpr, thresholds = roc_curve(y_val, predictions)
-    auc = roc_auc_score(y_val, predictions)
-
-    plt.figure(figsize=(20, 20), dpi=300)
-    plt.title('ROC Curve')
-    plt.plot([0, 1], [0, 1], linestyle='--')
-    plt.plot(fpr, tpr, 'c', marker='.', label=f'{label_name} = {auc:.3f}')
-    plt.legend(loc='lower right')
-    plt.ylabel('True Positive Rate')
-    plt.xlabel('False Positive Rate')
-
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format='png')
-    buffer.seek(0)
-    image_png = buffer.getvalue()
-    buffer.close()
-    plt.close()
-    return base64.b64encode(image_png).decode('utf-8')
-
-def plot_confusion_matrix(y_val, y_pred):
-    # Confusion Matrix
-    cm = confusion_matrix(y_val, y_pred)
-    plt.figure(figsize=(20, 20), dpi=300)
-    sns.set(font_scale=5)  # Adjust the font scale for better visibility
-    sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-    plt.xlabel('Predicted labels')
-    plt.ylabel('True labels')
-    plt.title('Confusion Matrix')
-
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format='png')
-    buffer.seek(0)
-    image_png = buffer.getvalue()
-    buffer.close()
-    plt.close()
-    return base64.b64encode(image_png).decode('utf-8')
 
 class DashboardView(View):
-    template_name = 'core/dashboard.html'
-    dataset = None
+    """Main dashboard for uploading datasets."""
 
-    def post(self, request, *args, **kwargs):
-        uploaded_data_file = request.FILES.get('data_file')
-        uploaded_labels_file = request.FILES.get('labels_file')
-        df_data_path = uploaded_data_file.temporary_file_path()
-        df_labels_path = uploaded_labels_file.temporary_file_path()
-        self.__class__.dataset = BaseDatasetClass(data_path=df_data_path, label_path=df_labels_path)
-        if uploaded_labels_file and uploaded_data_file:
-            report = {
-                'success': True
-            }
-            return render(request, self.template_name, report)
-        else:
-            return render(request, self.template_name, {'error': True})
+    template_name = 'core/dashboard.html'
 
     def get(self, request, *args, **kwargs):
+        """Display dashboard with upload form."""
+        form = DatasetUploadForm()
         messages_to_display = messages.get_messages(request)
         temporary_message = None
         for message in messages_to_display:
             temporary_message = message
-        return render(request, self.template_name, {'temporary_message': temporary_message})
+
+        context = {
+            'form': form,
+            'temporary_message': temporary_message
+        }
+        return render(request, self.template_name, context)
+
+    def post(self, request, *args, **kwargs):
+        """Handle dataset upload."""
+        form = DatasetUploadForm(request.POST, request.FILES)
+        if not form.is_valid():
+            return render(request, self.template_name, {'error': True, 'form': form})
+
+        created_temp_files = []
+        try:
+            uploaded_data_file = form.cleaned_data['data_file']
+            uploaded_labels_file = form.cleaned_data['labels_file']
+
+            # Determine file paths (use temporary_file_path if available)
+            if hasattr(uploaded_data_file, 'temporary_file_path'):
+                df_data_path = uploaded_data_file.temporary_file_path()
+            else:
+                df_data_path = _save_uploaded_to_temp(uploaded_data_file)
+                created_temp_files.append(df_data_path)
+
+            if hasattr(uploaded_labels_file, 'temporary_file_path'):
+                df_labels_path = uploaded_labels_file.temporary_file_path()
+            else:
+                df_labels_path = _save_uploaded_to_temp(uploaded_labels_file)
+                created_temp_files.append(df_labels_path)
+
+            # Process dataset
+            dataset = DatasetProcessor(data_path=df_data_path, label_path=df_labels_path)
+
+            # Store in session (use cache or database in production)
+            request.session['dataset_loaded'] = True
+            _dataset_cache['current'] = dataset
+
+            # Save upload to database for tracking
+            try:
+                from .models import DatasetUpload
+
+                # Get client IP
+                x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+                if x_forwarded_for:
+                    ip_address = x_forwarded_for.split(',')[0].strip()
+                else:
+                    ip_address = request.META.get('REMOTE_ADDR')
+
+                DatasetUpload.objects.create(
+                    data_file_name=uploaded_data_file.name,
+                    labels_file_name=uploaded_labels_file.name,
+                    total_samples=len(dataset.data),
+                    uploaded_by_ip=ip_address
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save dataset upload record: {str(e)}")
+
+            messages.success(request, 'Dataset uploaded and processed successfully!')
+            logger.info(f"Dataset uploaded: {uploaded_data_file.name}, {uploaded_labels_file.name}")
+
+            return render(request, self.template_name, {'success': True, 'form': DatasetUploadForm()})
+
+        except Exception as e:
+            logger.error(f"Error uploading dataset: {str(e)}")
+            messages.error(request, f'Error processing dataset: {str(e)}')
+            return render(request, self.template_name, {'error': True, 'form': form})
+
+        finally:
+            # Clean up any temp files we created
+            for path in created_temp_files:
+                try:
+                    os.unlink(path)
+                    logger.debug(f"Cleaned up temp file: {path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to remove temp file {path}: {cleanup_error}")
 
 
+class BaseModelView(TemplateView):
+    """Base view for all model evaluation views."""
+    
+    model_file_name = None
+    model_display_name = None
+    cache_timeout = 300  # 5 minutes cache
+    
+    def get_dataset(self, request):
+        """Get the current dataset from cache."""
+        if 'current' not in _dataset_cache:
+            messages.warning(request, 'Warning: Data and Label not uploaded.')
+            return None
+        return _dataset_cache['current']
+    
+    def get(self, request, *args, **kwargs):
+        """Evaluate model and display results with caching."""
+        # Check cache first
+        cache_key = f'model_eval_{self.model_file_name}_{request.session.session_key}'
+        cached_result = cache.get(cache_key)
+        
+        if cached_result and settings.DEBUG is False:
+            logger.info(f"Returning cached result for {self.model_display_name}")
+            return render(request, self.template_name, cached_result)
+        
+        dataset = self.get_dataset(request)
+        if dataset is None:
+            return redirect('core:dashboard')
+        
+        try:
+            # Load model using service
+            model_service = MLModelService(self.model_file_name)
+            model_service.load_model()
+            
+            # Make predictions
+            if self.model_file_name.endswith('.h5'):
+                # Deep learning model - lazy import
+                predictions = model_service.predict(dataset.X_val)
+                y_pred_labels = [1 if x > 0.5 else 0 for x in predictions.flatten()]
+                probs = predictions.flatten()
+            else:
+                # Traditional ML model
+                y_pred_labels = model_service.predict(dataset.X_val)
+                probs = model_service.predict_proba(dataset.X_val)
+            
+            # Calculate metrics
+            evaluator = ModelEvaluator()
+            metrics = evaluator.calculate_metrics(dataset.y_test, y_pred_labels)
+            
+            # Generate plots
+            plot_gen = PlotGenerator()
+            confusion_matrix_plot = plot_gen.plot_confusion_matrix(dataset.y_test, y_pred_labels)
+            roc_curve_plot = plot_gen.plot_roc_curve(dataset.y_test, probs, self.model_display_name)
+            
+            # Get classification report
+            classification_report = evaluator.get_classification_report(dataset.y_test, y_pred_labels)
+            
+            # Prepare context
+            context = {
+                'model_name': self.model_display_name,
+                'classificationReport': classification_report,
+                'confusion_matrix_string': confusion_matrix_plot,
+                'roc_curve_string': roc_curve_plot,
+                **metrics
+            }
+            
+            # Cache the result
+            cache.set(cache_key, context, self.cache_timeout)
+            
+            logger.info(f"{self.model_display_name} evaluation completed: {metrics}")
+            return render(request, self.template_name, context)
+            
+        except Exception as e:
+            logger.error(f"Error evaluating {self.model_display_name}: {str(e)}")
+            messages.error(request, f'Error evaluating model: {str(e)}')
+            return redirect('core:dashboard')
 
 
-class CNNView(TemplateView):
+class CNNView(BaseModelView):
+    """View for CNN/Deep Learning model."""
     template_name = 'core/CNN.html'
-
-    def get(self, request, *args, **kwargs):
-        algo_path = os.path.join(module_dir, '../', 'model', 'DeepLearning.h5')
-        model = load_model(algo_path)
-        dataset = DashboardView.dataset
-        if dataset is None:
-            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
-            return redirect('/')
-
-        # Evaluate the model on the val set
-        test_loss, test_acc, test_precision, test_recall = model.evaluate(dataset.X_test, dataset.y_test)
-
-        print('Test loss:', test_loss)
-        print('Test accuracy:', test_acc)
-
-        predictions = model.predict(dataset.X_val)
-        print("Predictions", predictions)
+    model_file_name = 'DeepLearning.h5'
+    model_display_name = 'CNN'
 
 
-        # Convert predictions to binary class labels
-        y_pred_labels = [1 if x > 0.5 else 0 for x in predictions]
-        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred_labels).replace('\n', '<br>')
-
-        data = {
-            'classificationReport': classificationReport,
-            'confusion_matrix_string': plot_confusion_matrix(y_val=dataset.y_val, y_pred=y_pred_labels),
-            'roc_curve_string': plot_roc_curve(y_val=dataset.y_val, predictions=predictions, label_name='cnn')
-        }
-        return render(request, self.template_name, data)
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        return context
-
-
-class SVMView(TemplateView):
+class SVMView(BaseModelView):
+    """View for SVM model."""
     template_name = 'core/svm.html'
-
-    def get(self, request, *args, **kwargs):
-
-        algo_path = os.path.join(module_dir, '../', 'model','SVMModel.pickle')
-        with open(algo_path, 'rb') as f:
-            algo = pickle.load(f)
-
-        dataset = DashboardView.dataset
-        if dataset is None:
-            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
-            return redirect('/')
-
-        y_pred = algo.predict(dataset.X_val)
-
-        # Calculate accuracy
-        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
-        print(f"Accuracy with SVM: {accuracy:.2f}%")
-        accuracy = round(accuracy, 2)
-
-        # Calculate precision
-        precision = precision_score(dataset.y_val, y_pred) * 100
-        precision = round(precision, 2)
-        print('Precision:', precision)
-
-        # Calculate recall
-        recall = recall_score(dataset.y_val, y_pred) * 100
-        recall = round(recall, 2)
-        print('Recall:', recall)
-
-        # Calculate F1-score
-        f1 = f1_score(dataset.y_val, y_pred) * 100
-        f1 = round(f1, 2)
-        print('F1-Score:', f1)
-
-        # Calculate area under ROC curve
-        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
-        roc_auc = round(roc_auc, 2)
-        print('ROC AUC Score:', roc_auc)
-
-        probs = algo.predict_proba(dataset.X_val)
-        probs = probs[:, 1]
-        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
-        data = {
-            'classificationReport': classificationReport,
-            'accuracy': accuracy,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'roc_auc': roc_auc,
-            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
-            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='svm')
-        }
-        return render(request, self.template_name, data)
-
-    # def plot_roc_curve(self, y_val, probs):
-    #     svm_fpr, svm_tpr, thresholds = roc_curve(y_val, probs)
-    #     svm_auc = roc_auc_score(y_val, probs)
-    #
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     plt.title('ROC Curve')
-    #     plt.plot([0, 1], [0, 1], linestyle='--')
-    #     plt.plot(svm_fpr, svm_tpr, 'c', marker='.', label=f'svm = %0.3f' % svm_auc)
-    #     plt.legend(loc='lower right')
-    #     plt.ylabel('True Positive Rate')
-    #     plt.xlabel('False Positive Rate')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-    #
-    # def plot_confusion_matrix(self, y_val, y_pred):
-    #     # Confusion Matrix
-    #     cm = confusion_matrix(y_val, y_pred)
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
-    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-    #     plt.xlabel('Predicted labels')
-    #     plt.ylabel('True labels')
-    #     plt.title('Confusion Matrix')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        return context
+    model_file_name = 'SVMModel.pickle'
+    model_display_name = 'SVM'
 
 
-class KNNView(TemplateView):
+class KNNView(BaseModelView):
+    """View for KNN model."""
     template_name = 'core/knn.html'
+    model_file_name = 'KNNModel.pickle'
+    model_display_name = 'KNN'
 
-    def get(self, request, *args, **kwargs):
 
-        algo_path = os.path.join(module_dir, '../', 'model','KNNModel.pickle')
-        with open(algo_path, 'rb') as f:
-            algo = pickle.load(f)
-
-        dataset = DashboardView.dataset
-        if dataset is None:
-            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
-            return redirect('/')
-
-        y_pred = algo.predict(dataset.X_val)
-
-        # Calculate accuracy
-        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
-        print(f"Accuracy: {accuracy:.2f}%")
-        accuracy = round(accuracy, 2)
-
-        # Calculate precision
-        precision = precision_score(dataset.y_val, y_pred) * 100
-        precision = round(precision, 2)
-        print('Precision:', precision)
-
-        # Calculate recall
-        recall = recall_score(dataset.y_val, y_pred) * 100
-        recall = round(recall, 2)
-        print('Recall:', recall)
-
-        # Calculate F1-score
-        f1 = f1_score(dataset.y_val, y_pred) * 100
-        f1 = round(f1, 2)
-        print('F1-Score:', f1)
-
-        # Calculate area under ROC curve
-        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
-        roc_auc = round(roc_auc, 2)
-        print('ROC AUC Score:', roc_auc)
-
-        probs = algo.predict_proba(dataset.X_val)
-        probs = probs[:, 1]
-        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
-        data = {
-            'classificationReport': classificationReport,
-            'accuracy': accuracy,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'roc_auc': roc_auc,
-            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
-            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='knn')
-        }
-        return render(request, self.template_name, data)
-
-    # def plot_roc_curve(self, y_val, probs):
-    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
-    #     auc = roc_auc_score(y_val, probs)
-    #
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     plt.title('ROC Curve')
-    #     plt.plot([0, 1], [0, 1], linestyle='--')
-    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'knn = %0.3f' % auc)
-    #     plt.legend(loc='lower right')
-    #     plt.ylabel('True Positive Rate')
-    #     plt.xlabel('False Positive Rate')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-    #
-    # def plot_confusion_matrix(self, y_val, y_pred):
-    #     # Confusion Matrix
-    #     cm = confusion_matrix(y_val, y_pred)
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
-    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-    #     plt.xlabel('Predicted labels')
-    #     plt.ylabel('True labels')
-    #     plt.title('Confusion Matrix')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        return context
-
-class NaiveBayesView(TemplateView):
+class NaiveBayesView(BaseModelView):
+    """View for Naive Bayes model."""
     template_name = 'core/naive.html'
+    model_file_name = 'NaiveBayesModel.pickle'
+    model_display_name = 'Naive Bayes'
 
-    def get(self, request, *args, **kwargs):
 
-        algo_path = os.path.join(module_dir, '../', 'model','NaiveBayesModel.pickle')
-        with open(algo_path, 'rb') as f:
-            algo = pickle.load(f)
-
-        dataset = DashboardView.dataset
-        if dataset is None:
-            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
-            return redirect('/')
-
-        y_pred = algo.predict(dataset.X_val)
-
-        # Calculate accuracy
-        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
-        print(f"Accuracy: {accuracy:.2f}%")
-        accuracy = round(accuracy, 2)
-
-        # Calculate precision
-        precision = precision_score(dataset.y_val, y_pred) * 100
-        precision = round(precision, 2)
-        print('Precision:', precision)
-
-        # Calculate recall
-        recall = recall_score(dataset.y_val, y_pred) * 100
-        recall = round(recall, 2)
-        print('Recall:', recall)
-
-        # Calculate F1-score
-        f1 = f1_score(dataset.y_val, y_pred) * 100
-        f1 = round(f1, 2)
-        print('F1-Score:', f1)
-
-        # Calculate area under ROC curve
-        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
-        roc_auc = round(roc_auc, 2)
-        print('ROC AUC Score:', roc_auc)
-
-        probs = algo.predict_proba(dataset.X_val)
-        probs = probs[:, 1]
-        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
-        data = {
-            'classificationReport': classificationReport,
-            'accuracy': accuracy,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'roc_auc': roc_auc,
-            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
-            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='naive')
-        }
-        return render(request, self.template_name, data)
-
-    # def plot_roc_curve(self, y_val, probs):
-    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
-    #     auc = roc_auc_score(y_val, probs)
-    #
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     plt.title('ROC Curve')
-    #     plt.plot([0, 1], [0, 1], linestyle='--')
-    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'naive = %0.3f' % auc)
-    #     plt.legend(loc='lower right')
-    #     plt.ylabel('True Positive Rate')
-    #     plt.xlabel('False Positive Rate')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-    #
-    # def plot_confusion_matrix(self, y_val, y_pred):
-    #     # Confusion Matrix
-    #     cm = confusion_matrix(y_val, y_pred)
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
-    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-    #     plt.xlabel('Predicted labels')
-    #     plt.ylabel('True labels')
-    #     plt.title('Confusion Matrix')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        return context
-
-class RandomForestView(TemplateView):
+class RandomForestView(BaseModelView):
+    """View for Random Forest model."""
     template_name = 'core/random_forest.html'
+    model_file_name = 'RandomForestModel.pickle'
+    model_display_name = 'Random Forest'
 
-    def get(self, request, *args, **kwargs):
 
-        algo_path = os.path.join(module_dir, '../', 'model','RandomForestModel.pickle')
-        with open(algo_path, 'rb') as f:
-            algo = pickle.load(f)
-
-        dataset = DashboardView.dataset
-        if dataset is None:
-            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
-            return redirect('/')
-
-        y_pred = algo.predict(dataset.X_val)
-
-        # Calculate accuracy
-        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
-        print(f"Accuracy: {accuracy:.2f}%")
-        accuracy = round(accuracy, 2)
-
-        # Calculate precision
-        precision = precision_score(dataset.y_val, y_pred) * 100
-        precision = round(precision, 2)
-        print('Precision:', precision)
-
-        # Calculate recall
-        recall = recall_score(dataset.y_val, y_pred) * 100
-        recall = round(recall, 2)
-        print('Recall:', recall)
-
-        # Calculate F1-score
-        f1 = f1_score(dataset.y_val, y_pred) * 100
-        f1 = round(f1, 2)
-        print('F1-Score:', f1)
-
-        # Calculate area under ROC curve
-        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
-        roc_auc = round(roc_auc, 2)
-        print('ROC AUC Score:', roc_auc)
-
-        probs = algo.predict_proba(dataset.X_val)
-        probs = probs[:, 1]
-        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
-        data = {
-            'classificationReport': classificationReport,
-            'accuracy': accuracy,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'roc_auc': roc_auc,
-            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
-            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='rf')
-        }
-        return render(request, self.template_name, data)
-
-    # def plot_roc_curve(self, y_val, probs):
-    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
-    #     auc = roc_auc_score(y_val, probs)
-    #
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     plt.title('ROC Curve')
-    #     plt.plot([0, 1], [0, 1], linestyle='--')
-    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'rf = %0.3f' % auc)
-    #     plt.legend(loc='lower right')
-    #     plt.ylabel('True Positive Rate')
-    #     plt.xlabel('False Positive Rate')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-    #
-    # def plot_confusion_matrix(self, y_val, y_pred):
-    #     # Confusion Matrix
-    #     cm = confusion_matrix(y_val, y_pred)
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
-    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-    #     plt.xlabel('Predicted labels')
-    #     plt.ylabel('True labels')
-    #     plt.title('Confusion Matrix')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        return context
-
-class XgBoostView(TemplateView):
+class XgBoostView(BaseModelView):
+    """View for XGBoost model."""
     template_name = 'core/xgboost.html'
-
-    def get(self, request, *args, **kwargs):
-
-        algo_path = os.path.join(module_dir, '../', 'model','XgBoostModel.pickle')
-        with open(algo_path, 'rb') as f:
-            algo = pickle.load(f)
-
-        dataset = DashboardView.dataset
-        if dataset is None:
-            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
-            return redirect('/')
-
-        y_pred = algo.predict(dataset.X_val)
-
-        # Calculate accuracy
-        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
-        print(f"Accuracy: {accuracy:.2f}%")
-        accuracy = round(accuracy, 2)
-
-        # Calculate precision
-        precision = precision_score(dataset.y_val, y_pred) * 100
-        precision = round(precision, 2)
-        print('Precision:', precision)
-
-        # Calculate recall
-        recall = recall_score(dataset.y_val, y_pred) * 100
-        recall = round(recall, 2)
-        print('Recall:', recall)
-
-        # Calculate F1-score
-        f1 = f1_score(dataset.y_val, y_pred) * 100
-        f1 = round(f1, 2)
-        print('F1-Score:', f1)
-
-        # Calculate area under ROC curve
-        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
-        roc_auc = round(roc_auc, 2)
-        print('ROC AUC Score:', roc_auc)
-
-        probs = algo.predict_proba(dataset.X_val)
-        probs = probs[:, 1]
-        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
-        data = {
-            'classificationReport': classificationReport,
-            'accuracy': accuracy,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'roc_auc': roc_auc,
-            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
-            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='xgboost')
-        }
-        return render(request, self.template_name, data)
-
-    # def plot_roc_curve(self, y_val, probs):
-    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
-    #     auc = roc_auc_score(y_val, probs)
-    #
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     plt.title('ROC Curve')
-    #     plt.plot([0, 1], [0, 1], linestyle='--')
-    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'xgboost = %0.3f' % auc)
-    #     plt.legend(loc='lower right')
-    #     plt.ylabel('True Positive Rate')
-    #     plt.xlabel('False Positive Rate')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-    #
-    # def plot_confusion_matrix(self, y_val, y_pred):
-    #     # Confusion Matrix
-    #     cm = confusion_matrix(y_val, y_pred)
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
-    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-    #     plt.xlabel('Predicted labels')
-    #     plt.ylabel('True labels')
-    #     plt.title('Confusion Matrix')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        return context
+    model_file_name = 'XgBoostModel.pickle'
+    model_display_name = 'XGBoost'
 
 
-class LogisticView(TemplateView):
+class LogisticView(BaseModelView):
+    """View for Logistic Regression model."""
     template_name = 'core/logistic.html'
-
-    def get(self, request, *args, **kwargs):
-
-        algo_path = os.path.join(module_dir, '../', 'model','LogisticRegressionModel.pickle')
-        with open(algo_path, 'rb') as f:
-            algo = pickle.load(f)
-
-        dataset = DashboardView.dataset
-        if dataset is None:
-            messages.add_message(request, messages.WARNING, 'Warning: Data and Label not uploaded.')
-            return redirect('/')
-
-        y_pred = algo.predict(dataset.X_val)
-
-        # Calculate accuracy
-        accuracy = accuracy_score(y_true=dataset.y_val, y_pred=y_pred) * 100
-        print(f"Accuracy with Logistic: {accuracy:.2f}%")
-        accuracy = round(accuracy, 2)
-
-        # Calculate precision
-        precision = precision_score(dataset.y_val, y_pred) * 100
-        precision = round(precision, 2)
-        print('Precision:', precision)
-
-        # Calculate recall
-        recall = recall_score(dataset.y_val, y_pred) * 100
-        recall = round(recall, 2)
-        print('Recall:', recall)
-
-        # Calculate F1-score
-        f1 = f1_score(dataset.y_val, y_pred) * 100
-        f1 = round(f1, 2)
-        print('F1-Score:', f1)
-
-        # Calculate area under ROC curve
-        roc_auc = roc_auc_score(dataset.y_val, y_pred) * 100
-        roc_auc = round(roc_auc, 2)
-        print('ROC AUC Score:', roc_auc)
-
-        probs = algo.predict_proba(dataset.X_val)
-        probs = probs[:, 1]
-        classificationReport = classification_report(y_true=dataset.y_val, y_pred=y_pred).replace('\n', '<br>')
-        data = {
-            'classificationReport': classificationReport,
-            'accuracy': accuracy,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'roc_auc': roc_auc,
-            'confusion_matrix_string': plot_confusion_matrix(dataset.y_val, y_pred),
-            'roc_curve_string': plot_roc_curve(dataset.y_val, probs, label_name='log')
-        }
-        return render(request, self.template_name, data)
-
-    # def plot_roc_curve(self, y_val, probs):
-    #     fpr, tpr, thresholds = roc_curve(y_val, probs)
-    #     auc = roc_auc_score(y_val, probs)
-    #
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     plt.title('ROC Curve')
-    #     plt.plot([0, 1], [0, 1], linestyle='--')
-    #     plt.plot(fpr, tpr, 'c', marker='.', label=f'svm = %0.3f' % auc)
-    #     plt.legend(loc='lower right')
-    #     plt.ylabel('True Positive Rate')
-    #     plt.xlabel('False Positive Rate')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-    #
-    # def plot_confusion_matrix(self, y_val, y_pred):
-    #     # Confusion Matrix
-    #     cm = confusion_matrix(y_val, y_pred)
-    #     plt.figure(figsize=(20, 20), dpi=300)
-    #     sns.set(font_scale=5)  # Adjust the font scale for better visibility
-    #     sns.heatmap(cm, annot=True, fmt='g', cmap='Blues', cbar=False)
-    #     plt.xlabel('Predicted labels')
-    #     plt.ylabel('True labels')
-    #     plt.title('Confusion Matrix')
-    #
-    #     buffer = io.BytesIO()
-    #     plt.savefig(buffer, format='png')
-    #     buffer.seek(0)
-    #     image_png = buffer.getvalue()
-    #     buffer.close()
-    #     plt.close()
-    #     return base64.b64encode(image_png).decode('utf-8')
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        return context
+    model_file_name = 'LogisticRegressionModel.pickle'
+    model_display_name = 'Logistic Regression'
 
 
 class VisualizationView(TemplateView):
+    """View for data visualization."""
     template_name = 'core/visualization.html'
-
-    def get(self, request, *args, **kwargs):
-
-        context = self.get_context_data()
-        return self.render_to_response(context=context)
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        # Add visualization data if needed
         return context
 
 
 class BestModelView(TemplateView):
+    """View for best model prediction."""
     template_name = 'core/best_model.html'
-    models_dataframe = pd.read_csv(os.path.join(module_dir, '../', 'data/model_acc_dataframe.csv'))
 
-    # def get(self, request, *args, **kwargs):
-    #
-    #     view = self.models_dataframe.iloc[0]['View']
-    #     view = eval(view).as_view()
-    #
-    #     return view(request, *args, **kwargs)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.models_dataframe = self._load_model_performance()
 
-    def get(self,request, *args, **kwargs):
-        return render(request, self.template_name, {'success': False, 'best_model_name': self.models_dataframe.iloc[0]['Model']})
+    def _load_model_performance(self):
+        """Load model performance data."""
+        try:
+            module_dir = os.path.dirname(__file__)
+            csv_path = os.path.join(module_dir, '../data/model_acc_dataframe.csv')
+            return pd.read_csv(csv_path)
+        except Exception as e:
+            logger.error(f"Error loading model performance data: {str(e)}")
+            return pd.DataFrame()
+
+    def get(self, request, *args, **kwargs):
+        """Display best model form."""
+        form = PatientPredictionForm()
+
+        if self.models_dataframe.empty:
+            best_model_name = "CNN"
+        else:
+            best_model_name = self.models_dataframe.iloc[0]['Model']
+
+        context = {
+            'form': form,
+            'success': False,
+            'best_model_name': best_model_name
+        }
+        return render(request, self.template_name, context)
 
     def post(self, request, *args, **kwargs):
-        patient_number = request.POST.get('patient_number')
+        """Handle patient prediction request."""
+        form = PatientPredictionForm(request.POST)
 
-        saved_model_name = self.models_dataframe.iloc[0]['SavedModelName']
-
-        algo_path = os.path.join(module_dir, '../', 'model', saved_model_name)
-        scaler1 = StandardScaler()
-        if saved_model_name == 'DeepLearning.h5':
-            model = load_model(algo_path)
+        if self.models_dataframe.empty:
+            best_model_name = "CNN"
+            saved_model_name = "DeepLearning.h5"
         else:
-            with open(saved_model_name, 'rb') as f:
-                model = pickle.load(f)
-        print('Print: ',module_dir)
-        data_path = os.path.join(module_dir, '../', 'data/Epileptic Seizure Recognition.csv')
-        dataset = pd.read_csv(data_path)
-        dataset = dataset[dataset['Unnamed'].str.split('.').str[2] == patient_number].copy()
-        data_x = dataset.drop(['Unnamed', 'y'], axis=1).copy()
-        scaler1.fit(data_x)
-        data_x = scaler1.transform(data_x)
-        # data_y = dataset['y'].replace([2,3,4,5],0).copy()
+            best_model_name = self.models_dataframe.iloc[0]['Model']
+            saved_model_name = self.models_dataframe.iloc[0]['SavedModelName']
 
-        predictions = model.predict(data_x)
-        binary_predictions = [1 if prediction > 0.5 else 0 for prediction in predictions]
-        print(binary_predictions)
-        # Threshold for classification
-        threshold = 0.5
+        if form.is_valid():
+            try:
+                patient_number = form.cleaned_data['patient_number']
+                threshold = form.cleaned_data.get('threshold', 0.5)
 
-        # Apply threshold and classify patient's output
-        predicted_class = 1 if np.mean(binary_predictions) >= threshold else 0
+                # Create model service and prediction service
+                model_service = MLModelService(saved_model_name)
+                prediction_service = PredictionService(model_service)
 
-        print(predicted_class)
-        # Print prediction
-        if predicted_class == 1:
-            output_string = f"The patient {patient_number} is predicted to have epilepsy."
+                # Make prediction
+                result = prediction_service.predict_patient(patient_number, threshold)
+
+                context = {
+                    'form': form,
+                    'output_string': result['message'],
+                    'confidence': result['confidence'],
+                    'success': True,
+                    'best_model_name': best_model_name,
+                    'predicted_class': result['predicted_class']
+                }
+
+                logger.info(f"Prediction made for patient {patient_number}: {result}")
+                return render(request, self.template_name, context)
+
+            except Exception as e:
+                logger.error(f"Error making prediction: {str(e)}")
+                messages.error(request, f'Error making prediction: {str(e)}')
+                context = {
+                    'form': form,
+                    'success': False,
+                    'best_model_name': best_model_name,
+                    'error_message': str(e)
+                }
+                return render(request, self.template_name, context)
         else:
-            output_string = f"The patient {patient_number} is predicted to not have epilepsy."
-
-        data = {
-            'output_string': output_string,
-            'success': True,
-            'best_model_name': self.models_dataframe.iloc[0]['Model']
-        }
-        return render(request, self.template_name, data)
-
+            context = {
+                'form': form,
+                'success': False,
+                'best_model_name': best_model_name
+            }
+            return render(request, self.template_name, context)

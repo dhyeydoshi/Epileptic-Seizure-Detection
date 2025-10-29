@@ -1,1 +1,5 @@
 db.sqlite3
+/.gitignore_v2
+/static_root
+/logs
+/.gitignore
